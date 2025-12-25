@@ -5,40 +5,34 @@ import numpy as np
 from paddleocr import PaddleOCR
 import json
 import pygetwindow as gw
-import mss  # 核心截图库
+import mss
+import re # 确保导入 re 模块
 
-# 1. 初始化 OCR (去除不兼容参数)
-# 首次运行会自动下载模型，请耐心等待
+# 1. 初始化 OCR
 ocr = PaddleOCR(use_textline_orientation=False, lang="ch")
 
 # ================= 配置区 (请填入 calibration.py 生成的数据) =================
 CONFIG = {
-    "start_x": 3562,
-    "start_y": 267,
+    # 请确保这里是你 calibration.py 跑出来的最新坐标！
+    "start_x": 3562,   
+    "start_y": 267,    
     "step_x": 49,
     "step_y": 38,
-
-    # 详情区域 (x, y, w, h)
-    "detail_region": (3490, 489, 336, 480),
-
+    "detail_region": (3490, 489, 336, 480), 
     "total_days": 31,
-    "first_day_weekday": 1
+    "first_day_weekday": 1 
 }
-
 # ========================================================================
 
 def capture_region_mss(x, y, w, h):
-    """ 使用 MSS 进行跨屏幕截图，解决副屏黑屏问题 """
     with mss.mss() as sct:
         monitor = {"top": int(y), "left": int(x), "width": int(w), "height": int(h)}
         sct_img = sct.grab(monitor)
         img_np = np.array(sct_img)
-        # MSS 返回 BGRA，OpenCV 需要 BGR
         img_bgr = cv2.cvtColor(img_np, cv2.COLOR_BGRA2BGR)
         return img_bgr
 
 def force_activate_feishu():
-    """ 强制激活窗口并最大化，保证坐标不偏移 """
     try:
         windows = gw.getWindowsWithTitle('飞书')
         if not windows: windows = gw.getWindowsWithTitle('Lark')
@@ -46,7 +40,7 @@ def force_activate_feishu():
             win = windows[0]
             if win.isMinimized: win.restore()
             win.activate()
-            win.maximize() # 强制全屏
+            win.maximize()
             time.sleep(1)
             return True
     except:
@@ -56,7 +50,6 @@ def force_activate_feishu():
     return True
 
 def get_day_coordinates(day, config):
-    """ 计算每一天的点击坐标 """
     grid_index = day - 1 + config["first_day_weekday"]
     row = grid_index // 7
     col = grid_index % 7
@@ -67,38 +60,32 @@ def get_day_coordinates(day, config):
 def run_fast_automation():
     force_activate_feishu()
     
-    # === 阶段 1: 极速采集 (只截图，不识别) ===
+    # === 阶段 1: 极速采集 ===
     print(f"🚀 [阶段 1/2] 正在极速采集 {CONFIG['total_days']} 天数据...")
     captured_data = [] 
 
     for day in range(1, CONFIG['total_days'] + 1):
         x, y = get_day_coordinates(day, CONFIG)
-        
-        # 1. 点击日期
         pyautogui.click(x, y)
+        time.sleep(0.25) # 稍微给点时间刷新
         
-        # 2. 极短等待 (0.2秒足够飞书刷新本地UI)
-        time.sleep(0.2) 
-        
-        # 3. 截图存内存
         dx, dy, dw, dh = CONFIG["detail_region"]
         img_np = capture_region_mss(dx, dy, dw, dh)
         
         captured_data.append({"day": day, "image": img_np})
         print(f"  📸 已采集: {day}日", end="\r")
 
-    print("\n✅ 采集完成！鼠标已释放，开始后台识别...")
+    print("\n✅ 采集完成！开始后台识别...")
 
-    # === 阶段 2: 后台计算 (OCR 识别) ===
-    print(f"🐢 [阶段 2/2] 正在进行 OCR 识别，请稍候...")
+    # === 阶段 2: 后台计算 ===
+    print(f"🐢 [阶段 2/2] 正在进行 OCR 识别与精准解析...")
     results = []
     
     for item in captured_data:
         day = item['day']
         img_np = item['image']
         
-        # 图像处理：简单放大 2 倍 (最稳妥方案)
-        # 不做二值化，防止笔画粘连
+        # 图像处理：简单放大 2 倍
         img_gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
         scale = 2.0 
         img_zoom = cv2.resize(img_gray, None, fx=scale, fy=scale)
@@ -114,36 +101,49 @@ def run_fast_automation():
             "raw_text": []
         }
 
-        # 数据解析 (兼容 PaddleOCR 新版字典格式)
         if ocr_result and len(ocr_result) > 0:
             result_item = ocr_result[0]
             texts = []
             
-            # 提取文字列表
+            # 兼容性处理
             if isinstance(result_item, dict) and 'rec_texts' in result_item:
                 texts = result_item['rec_texts']
             elif isinstance(result_item, list):
                 texts = [line[1][0] for line in result_item]
             
             daily_info["raw_text"] = texts
-            print(f"Processing {day}日: {texts}")
-
-            # 提取 HH:MM 时间
-            import re
-            full_text = " ".join(texts)
-            times = re.findall(r"(\d{1,2}:\d{2})", full_text)
             
-            valid_times = []
-            for t in times:
+            # =========== 🔥 核心修复逻辑开始 🔥 ===========
+            valid_punches = []
+            
+            # 遍历每一行文字，只有包含“已打卡”的行，才提取时间
+            for text_line in texts:
+                if "已打卡" in text_line:
+                    # 在这一行里找时间 (HH:MM)
+                    found_times = re.findall(r"(\d{1,2}:\d{2})", text_line)
+                    if found_times:
+                        # 找到的时间加入列表
+                        valid_punches.extend(found_times)
+            
+            # 过滤掉不合理的时间（比如 > 24:00）
+            cleaned_punches = []
+            for t in valid_punches:
                 try:
                     h, m = map(int, t.split(':'))
-                    if h < 24 and m < 60: valid_times.append(t)
+                    if h < 24 and m < 60:
+                        cleaned_punches.append(t)
                 except: continue
 
-            if valid_times:
-                daily_info["check_in"] = valid_times[0]
-                if len(valid_times) > 1 and valid_times[-1] != valid_times[0]:
-                    daily_info["check_out"] = valid_times[-1]
+            # 赋值：第一个是上班，最后一个是下班
+            if cleaned_punches:
+                daily_info["check_in"] = cleaned_punches[0]
+                # 只有当打卡记录多于1条，且不相同时，才记录下班
+                if len(cleaned_punches) > 1 and cleaned_punches[-1] != cleaned_punches[0]:
+                    daily_info["check_out"] = cleaned_punches[-1]
+            
+            # 调试打印，方便你看结果
+            print(f"✅ {day}日: 上班[{daily_info['check_in']}] 下班[{daily_info['check_out']}] | 原始内容: {texts}")
+            # =========== 🔥 核心修复逻辑结束 🔥 ===========
         
         results.append(daily_info)
 
