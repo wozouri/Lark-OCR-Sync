@@ -12,15 +12,15 @@ import re # 确保导入 re 模块
 ocr = PaddleOCR(use_textline_orientation=False, lang="ch")
 
 # ================= 配置区 (请填入 calibration.py 生成的数据) =================
+
 CONFIG = {
-    # 请确保这里是你 calibration.py 跑出来的最新坐标！
-    "start_x": 3562,   
-    "start_y": 267,    
-    "step_x": 49,
-    "step_y": 38,
-    "detail_region": (3490, 489, 336, 480), 
+    "start_x": 3805,
+    "start_y": 267,
+    "step_x": 292,
+    "step_y": 37,
+    "detail_region": (3487, 495, 341, 474),
     "total_days": 31,
-    "first_day_weekday": 1 
+    "first_day_weekday": 1
 }
 # ========================================================================
 
@@ -50,11 +50,27 @@ def force_activate_feishu():
     return True
 
 def get_day_coordinates(day, config):
+    # 计算该日期在网格中的绝对索引 (0-based)
+    # 比如: 1号是周六(index 6)，那么它就是网格里的第 6 个格子
     grid_index = day - 1 + config["first_day_weekday"]
+    
     row = grid_index // 7
     col = grid_index % 7
-    x = config["start_x"] + (col - config["first_day_weekday"]) * config["step_x"]
-    y = config["start_y"] + row * config["step_y"]
+    
+    # 【核心修改】
+    # 我们假设 start_x/y 是 "网格左上角第一格(周日)" 的坐标
+    # 而不是 "1号" 的坐标。这样逻辑更符合直觉。
+    # ----------------------------------------------------
+    # 但为了兼容你现在的 Config (start_x 是 1号的坐标)，我们需要反推：
+    # 1号的列索引是 config["first_day_weekday"]
+    # 所以：网格起始X = start_x - (1号的列 * step_x)
+    
+    grid_start_x = config["start_x"] - (config["first_day_weekday"] * config["step_x"])
+    grid_start_y = config["start_y"] # 假设1号肯定在第一行，所以Y不用变
+    
+    x = grid_start_x + col * config["step_x"]
+    y = grid_start_y + row * config["step_y"]
+    
     return x, y
 
 def run_fast_automation():
